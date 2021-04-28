@@ -1,2 +1,0 @@
-W:\repos\handmade\build\handmade.exe.lastcodeanalysissucceeded
-W:\repos\handmade\build\tmp\NativeCodeAnalysis.read.1.tlog
