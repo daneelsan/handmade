@@ -29,5 +29,6 @@
     <None Include="misc\4ed.bat">
       <Filter>Source Files</Filter>
     </None>
+    <None Include=".gitignore" />
   </ItemGroup>
 </Project>
