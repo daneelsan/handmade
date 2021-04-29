@@ -2,15 +2,30 @@
 #include <windows.h>
 #pragma warning(pop)
 
-LRESULT CALLBACK MainWindowCallback(_In_ HWND windowHandle, _In_ UINT messageID,
-                                    _In_ WPARAM wParam, _In_ LPARAM lParam);
+#define internal static
+#define global_variable static
+#define local_persist static
+
+// @NOTE: `running` is global for now
+global_variable BOOL running;
+global_variable BITMAPINFO bitmapInfo;
+global_variable VOID *bitmapMemory;
+global_variable HBITMAP bitmapHandle;
+global_variable HDC bitmapDeviceContext;
+
+LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
+                                         _In_ UINT messageID,
+                                         _In_ WPARAM wParam,
+                                         _In_ LPARAM lParam);
+internal void Win32ResizeDIBSection(int width, int height);
+internal void Win32UpdateWindow(HDC deviceContext, int x, int y, int width,
+                                int height);
 
 int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
                    _In_ LPSTR commandLine, _In_ int commandShow) {
   WNDCLASSA windowClass = {
-      // @TODO: Check if these styles still matter
-      .style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
-      .lpfnWndProc = MainWindowCallback,  // pointer to the window procedure
+      .lpfnWndProc =
+          Win32MainWindowCallback,  // pointer to the window procedure
       .hInstance = instance,
       .hIcon = NULL,  // handle to the class icon
       .lpszClassName = "HandmadeHero_WindowClass",
@@ -43,8 +58,10 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
 
   MSG msg = {0};
   BOOL msgResult;
+  running = TRUE;
 
-  while ((msgResult = GetMessageA(&msg, NULL, 0, 0)) != 0) {
+  while (running) {
+    msgResult = GetMessageA(&msg, NULL, 0, 0);
     if (msgResult == -1) {
       OutputDebugStringA("Error:GetMessageA\n");
       return 0;
@@ -54,8 +71,8 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     }
   }
 
-  MessageBoxA(NULL, "This is Handmade Hero", "Handmade Hero",
-              MB_OK | MB_ICONINFORMATION);
+  // MessageBoxA(NULL, "This is Handmade Hero", "Handmade Hero",
+  //            MB_OK | MB_ICONINFORMATION);
 
   return 0;
 
@@ -64,8 +81,10 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
   UNREFERENCED_PARAMETER(commandShow);
 }
 
-LRESULT CALLBACK MainWindowCallback(_In_ HWND windowHandle, _In_ UINT messageID,
-                                    _In_ WPARAM wParam, _In_ LPARAM lParam) {
+LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
+                                         _In_ UINT messageID,
+                                         _In_ WPARAM wParam,
+                                         _In_ LPARAM lParam) {
   LRESULT result = 0;
 
   switch (messageID) {
@@ -74,12 +93,12 @@ LRESULT CALLBACK MainWindowCallback(_In_ HWND windowHandle, _In_ UINT messageID,
     } break;
 
     case WM_CLOSE: {
-      // if (MessageBox(windowHandle, "Close?", "Game_B", MB_YESNOCANCEL) ==
-      //    IDYES) {
-      //  DestroyWindow(windowHandle);
-      //}
       OutputDebugStringA("WM_CLOSE\n");
-      DestroyWindow(windowHandle);
+      if (MessageBoxA(windowHandle, "Close", "Handmade Hero", MB_YESNOCANCEL) ==
+          IDYES) {
+        running = FALSE;
+        DestroyWindow(windowHandle);
+      }
     } break;
 
     case WM_CREATE: {
@@ -87,8 +106,9 @@ LRESULT CALLBACK MainWindowCallback(_In_ HWND windowHandle, _In_ UINT messageID,
     } break;
 
     case WM_DESTROY: {
-      // Clean up window-specific data objects
       OutputDebugStringA("WM_DESTROY\n");
+      // @NOTE: Handle this as an error (?)
+      running = FALSE;
       PostQuitMessage(0);
     } break;
 
@@ -107,9 +127,7 @@ LRESULT CALLBACK MainWindowCallback(_In_ HWND windowHandle, _In_ UINT messageID,
       int y = paint.rcPaint.top;
       int width = paint.rcPaint.right - x;
       int height = paint.rcPaint.bottom - y;
-      static DWORD rop = WHITENESS;
-      rop = (rop == WHITENESS) ? BLACKNESS : WHITENESS;
-      PatBlt(deviceContext, x, y, width, height, rop);
+      Win32UpdateWindow(deviceContext, x, y, width, height);
 
       TextOutA(deviceContext, 0, 0, "Hello, Windows!", 15);
 
@@ -117,7 +135,11 @@ LRESULT CALLBACK MainWindowCallback(_In_ HWND windowHandle, _In_ UINT messageID,
     } break;
 
     case WM_SIZE: {
-      OutputDebugStringA("WM_SIZE\n");
+      RECT clientRect;
+      GetClientRect(windowHandle, &clientRect);
+      int width = clientRect.right - clientRect.left;
+      int height = clientRect.bottom - clientRect.top;
+      Win32ResizeDIBSection(width, height);
     } break;
 
     default: {
@@ -126,4 +148,37 @@ LRESULT CALLBACK MainWindowCallback(_In_ HWND windowHandle, _In_ UINT messageID,
   }
 
   return result;
+}
+
+internal void Win32ResizeDIBSection(int width, int height) {
+  // @TODO: Bullet proof this
+  // Maybe don't free first, free after, then free first if that fails
+
+  if (bitmapHandle != NULL) {
+    DeleteObject(bitmapHandle);
+  }
+  
+  if (bitmapDeviceContext == NULL) {
+    bitmapDeviceContext = CreateCompatibleDC(NULL);
+  }
+
+  bitmapInfo = (BITMAPINFO){
+      .bmiHeader =
+          {
+              .biSize = sizeof(BITMAPINFOHEADER),
+              .biWidth = width,
+              .biHeight = height,
+              .biPlanes = 1,
+              .biBitCount = 32,
+              .biCompression = BI_RGB,
+          },
+  };
+  bitmapHandle = CreateDIBSection(bitmapDeviceContext, &bitmapInfo,
+                                  DIB_RGB_COLORS, &bitmapMemory, NULL, 0);
+}
+
+internal void Win32UpdateWindow(HDC deviceContext, int x, int y, int width,
+                                int height) {
+  StretchDIBits(deviceContext, x, y, width, height, x, y, width, height,
+                bitmapMemory, &bitmapInfo, DIB_RGB_COLORS, SRCCOPY);
 }
