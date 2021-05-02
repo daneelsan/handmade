@@ -1,5 +1,6 @@
 #pragma warning(push, 3)
 #include <windows.h>
+#include <dsound.h>
 #pragma warning(pop)
 #include <stdbool.h>
 #include <stdint.h>
@@ -14,7 +15,12 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
-// @NOTE: `running` is global for now
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+
+// NOTE: `running` is global for now
 global_variable bool running;
 
 typedef struct Win32OffscreenBuffer {
@@ -25,7 +31,7 @@ typedef struct Win32OffscreenBuffer {
   int bytesPerPixel;
   int pitch;
 
-  u8 _padding[4];
+  u32 _padding;
 } Win32OffscreenBuffer;
 
 global_variable Win32OffscreenBuffer gameBackBuffer = {.bytesPerPixel = 4};
@@ -42,13 +48,13 @@ typedef struct Win32WindowDimensions {
 #define X_INPUT_SET_STATE(func) \
   DWORD WINAPI func(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
 
-// @TODO(dans): Try this with function pointer instead
+// TODO(dans): Try this with function pointer instead
 typedef X_INPUT_GET_STATE(sigXInputGetState);
 typedef X_INPUT_SET_STATE(sigXInputSetState);
 
 #pragma warning(disable : 4100)  // unused parameters
-X_INPUT_GET_STATE(stubXInputGetState) { return 0; }
-X_INPUT_SET_STATE(stubXInputSetState) { return 0; }
+X_INPUT_GET_STATE(stubXInputGetState) { return ERROR_DEVICE_NOT_CONNECTED; }
+X_INPUT_SET_STATE(stubXInputSetState) { return ERROR_DEVICE_NOT_CONNECTED; }
 #pragma warning(default : 4100)
 
 global_variable sigXInputGetState *dynamicXInputGetState = stubXInputGetState;
@@ -58,16 +64,109 @@ global_variable sigXInputSetState *dynamicXInputSetState = stubXInputSetState;
 #define XInputSetState dynamicXInputSetState
 
 internal void Win32LoadXInput(void) {
-  HMODULE XInputModule = LoadLibraryA("xinput1_3.dll");
+  // TODO(casey): Test this on Windows 8
+  HMODULE XInputModule = LoadLibraryA("xinput1_4.dll");
+  if (XInputModule == NULL) {
+    // TODO(casey): Diagnostic
+    XInputModule = LoadLibraryA("xinput1_3.dll");
+  }
+
   if (XInputModule != NULL) {
     XInputGetState =
         (sigXInputGetState *)GetProcAddress(XInputModule, "XInputGetState");
+    if (XInputGetState == NULL) {
+      XInputGetState = stubXInputGetState;
+    }
+
     XInputSetState =
         (sigXInputSetState *)GetProcAddress(XInputModule, "XInputSetState");
+    if (XInputSetState == NULL) {
+      XInputSetState = stubXInputSetState;
+    }
+  } else {
+    // TODO(casey): Diagnostic
   }
 }
 
 /* XInpput: End */
+
+/* DirectSound: Start */
+
+typedef HRESULT WINAPI sigDirectSoundCreate(LPCGUID pcGuidDevice,
+                                            LPDIRECTSOUND *ppDS,
+                                            LPUNKNOWN pUnkOuter);
+
+internal void Win32InitDirectSound(HWND windowHandle, DWORD samplesPerSec,
+                                   DWORD bufferBytes) {
+  // Load the library
+  HMODULE DSoundModule = LoadLibraryA("dsound.dll");
+  if (DSoundModule == NULL) {
+    // TODO(casey): Diagnostic
+    return;
+  }
+
+  sigDirectSoundCreate *DirectSoundCreate =
+      (sigDirectSoundCreate *)GetProcAddress(DSoundModule, "DirectSoundCreate");
+  if (DirectSoundCreate == NULL) {
+    // TODO(casey): Diagnostic
+    return;
+  }
+
+  // TODO(casey): Double-check this works on XP - DSound 7 or 8?
+  LPDIRECTSOUND directSound;
+  if (FAILED(DirectSoundCreate(NULL, &directSound, NULL))) {
+    // TODO(casey): Diagnostic
+    return;
+  }
+
+  if (FAILED(IDirectSound_SetCooperativeLevel(directSound, windowHandle,
+                                              DSSCL_PRIORITY))) {
+    // TODO(casey): Diagnostic
+    return;
+  }
+
+  WAVEFORMATEX waveFormat = {0};
+  waveFormat.wFormatTag = WAVE_FORMAT_PCM;
+  waveFormat.nChannels = 2;
+  waveFormat.nSamplesPerSec = samplesPerSec;
+  waveFormat.wBitsPerSample = 16;
+  waveFormat.nBlockAlign =
+      (waveFormat.nChannels * waveFormat.wBitsPerSample) / 8;
+  waveFormat.nAvgBytesPerSec =
+      waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
+
+  // NOTE(dans): Not a buffer! Just handle to the primary sound device
+  DSBUFFERDESC primaryBufferDescription = {0};
+  primaryBufferDescription.dwSize = sizeof(DSBUFFERDESC);
+  primaryBufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
+  LPDIRECTSOUNDBUFFER primaryBuffer;
+  if (SUCCEEDED(IDirectSound_CreateSoundBuffer(
+          directSound, &primaryBufferDescription, &primaryBuffer, NULL))) {
+    if (FAILED(IDirectSoundBuffer_SetFormat(primaryBuffer, &waveFormat))) {
+      // TODO(casey): Diagnostic
+    }
+  } else {
+    // TODO(casey): Diagnostic
+  }
+
+  DSBUFFERDESC secondaryBufferDescription = (DSBUFFERDESC){
+      .dwSize = sizeof(DSBUFFERDESC),
+      .dwFlags = 0,
+      .dwBufferBytes = bufferBytes,
+      .dwReserved = 0,
+      .lpwfxFormat = &waveFormat,
+  };
+  LPDIRECTSOUNDBUFFER secondaryBuffer;
+  if (FAILED(IDirectSound_CreateSoundBuffer(
+          directSound, &secondaryBufferDescription, &secondaryBuffer, NULL))) {
+    // TODO(casey): Diagnostic
+    return;
+  }
+
+  // Start it playing!
+}
+
+/* DirectSound: End*/
 
 internal Win32WindowDimensions Win32GetWindowDimension(HWND windowHandle) {
   RECT clientRect;
@@ -79,21 +178,23 @@ internal Win32WindowDimensions Win32GetWindowDimension(HWND windowHandle) {
   };
 }
 
-internal void renderStuff(Win32OffscreenBuffer buffer) {
-  // @TODO: See what optimizer does in value vs reference
-  local_persist int offset = 0;
-  u8 *row = (u8 *)buffer.memory;
+global_variable int stuffx;
+global_variable int stuffy;
+internal void renderStuff(Win32OffscreenBuffer *buffer) {
+  // TODO: See what optimizer does in value vs reference
+  u8 *row = (u8 *)buffer->memory;
 
-  for (int y = 0; y < buffer.height; ++y) {
+  for (int y = 0; y < buffer->height; ++y) {
     u32 *pixel = (u32 *)row;
-    for (int x = 0; x < buffer.width; ++x) {
-      *pixel = (u32)(x + y + offset);
+    for (int x = 0; x < buffer->width; ++x) {
+      u8 green = (u8)(x + stuffx);
+      u8 blue = (u8)(y + stuffy);
+
+      *pixel = (green << 8) + blue;
       pixel += 1;
     }
-    row += buffer.pitch;
+    row += buffer->pitch;
   }
-
-  ++offset;
 }
 internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width,
                                     int height) {
@@ -120,7 +221,7 @@ internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width,
   SIZE_T bitmapMemorySize =
       ((SIZE_T)width * (SIZE_T)height * buffer->bytesPerPixel);
   buffer->memory =
-      VirtualAlloc(NULL, bitmapMemorySize, MEM_COMMIT, PAGE_READWRITE);
+      VirtualAlloc(NULL, bitmapMemorySize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
   if (buffer->memory == NULL) {
     OutputDebugStringA("Error:VirtualAlloc");
   }
@@ -128,11 +229,11 @@ internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width,
 
 internal void Win32CopyBufferToWindow(HDC deviceContext, LONG windowWidth,
                                       LONG windowHeight,
-                                      Win32OffscreenBuffer buffer) {
-  StretchDIBits(deviceContext,                      // handle to device context
-                0, 0, windowWidth, windowHeight,    // destination rectangle
-                0, 0, buffer.width, buffer.height,  // source rectangle
-                buffer.memory, &buffer.info,  // pointer to DIB and its info
+                                      Win32OffscreenBuffer *buffer) {
+  StretchDIBits(deviceContext,                    // handle to device context
+                0, 0, windowWidth, windowHeight,  // destination rectangle
+                0, 0, buffer->width, buffer->height,  // source rectangle
+                buffer->memory, &buffer->info,  // pointer to DIB and its info
                 DIB_RGB_COLORS, SRCCOPY);
 }
 
@@ -162,7 +263,7 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
 
     case WM_DESTROY: {
       OutputDebugStringA("WM_DESTROY\n");
-      // @NOTE: Handle this as an error (?)
+      // NOTE: Handle this as an error (?)
       running = false;
       PostQuitMessage(0);
     } break;
@@ -173,7 +274,7 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
       Win32WindowDimensions windowDims = Win32GetWindowDimension(windowHandle);
 
       Win32CopyBufferToWindow(deviceContext, windowDims.width,
-                              windowDims.height, gameBackBuffer);
+                              windowDims.height, &gameBackBuffer);
       TextOutA(deviceContext, 0, 0, "Hello, Windows!", 15);
 
       EndPaint(windowHandle, &paint);
@@ -198,6 +299,18 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
           if (wasDown) OutputDebugStringA("wasDown");
           OutputDebugStringA("\n");
         } break;
+        case 'W': {
+          stuffy += 10;
+        } break;
+        case 'S': {
+          stuffy -= 10;
+        } break;
+        case 'A': {
+          stuffx += 10;
+        } break;
+        case 'D': {
+          stuffx -= 10;
+        } break;
         default:
           break;
       }
@@ -205,6 +318,11 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
       if (GetAsyncKeyState(VK_ESCAPE)) {
         OutputDebugStringA("WM_KEYDOWN:VK_ESCAPE\n");
         SendMessageA(windowHandle, WM_CLOSE, 0, 0);
+      }
+
+      BOOL altKeyDown = (lParam >> 29) & 0x1;
+      if (altKeyDown && (vkCode == VK_F4)) {
+        running = false;
       }
     } break;
 
@@ -255,9 +373,10 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     return 0;
   }
 
+  Win32InitDirectSound(windowHandle, 48000, 48000 * sizeof(i16) * 2);
+
   MSG msg = {0};
   running = true;
-
   while (running) {
     while (PeekMessageA(&msg, windowHandle, 0, 0, PM_REMOVE)) {
       if (msg.message == WM_QUIT) {
@@ -267,13 +386,13 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
       DispatchMessageA(&msg);
     }
 
-    // @TODO: Should we poll this more frequently?
+    // TODO: Should we poll this more frequently?
     for (DWORD controller = 0; controller < XUSER_MAX_COUNT; ++controller) {
       XINPUT_STATE controllerState = {0};
 
       if (XInputGetState(controller, &controllerState) == ERROR_SUCCESS) {
         // Controller is connected
-        // @TODO: see if controllerState.dwPacketNumber increments too rapidly
+        // TODO: see if controllerState.dwPacketNumber increments too rapidly
         // XINPUT_GAMEPAD *gamepad = &controllerState.Gamepad;
 
       } else {
@@ -281,14 +400,17 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
       }
     }
 
-    renderStuff(gameBackBuffer);
+    renderStuff(&gameBackBuffer);
 
     // CS_OWNDC: https://devblogs.microsoft.com/oldnewthing/20060601-06/?p=31003
     HDC deviceContext = GetDC(windowHandle);
     Win32WindowDimensions windowDims = Win32GetWindowDimension(windowHandle);
     Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height,
-                            gameBackBuffer);
+                            &gameBackBuffer);
     ReleaseDC(windowHandle, deviceContext);
+
+    stuffx += 1;
+    stuffy += 2;
   }
 
   // MessageBoxA(NULL, "This is Handmade Hero", "Handmade Hero",
