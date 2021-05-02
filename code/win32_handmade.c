@@ -1,7 +1,9 @@
 #pragma warning(push, 3)
 #include <windows.h>
 #pragma warning(pop)
+#include <stdbool.h>
 #include <stdint.h>
+#include <xinput.h>
 
 #define internal static
 #define global_variable static
@@ -13,7 +15,7 @@ typedef uint32_t u32;
 typedef uint64_t u64;
 
 // @NOTE: `running` is global for now
-global_variable BOOL running;
+global_variable bool running;
 
 typedef struct Win32OffscreenBuffer {
   void *memory;
@@ -26,12 +28,46 @@ typedef struct Win32OffscreenBuffer {
   u8 _padding[4];
 } Win32OffscreenBuffer;
 
-global_variable Win32OffscreenBuffer gameBackBuffer;
+global_variable Win32OffscreenBuffer gameBackBuffer = {.bytesPerPixel = 4};
 
 typedef struct Win32WindowDimensions {
   int width;
   int height;
 } Win32WindowDimensions;
+
+/* XInpput: Start */
+
+#define X_INPUT_GET_STATE(func) \
+  DWORD WINAPI func(DWORD dwUserIndex, XINPUT_STATE *pState)
+#define X_INPUT_SET_STATE(func) \
+  DWORD WINAPI func(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
+
+// @TODO(dans): Try this with function pointer instead
+typedef X_INPUT_GET_STATE(sigXInputGetState);
+typedef X_INPUT_SET_STATE(sigXInputSetState);
+
+#pragma warning(disable : 4100)  // unused parameters
+X_INPUT_GET_STATE(stubXInputGetState) { return 0; }
+X_INPUT_SET_STATE(stubXInputSetState) { return 0; }
+#pragma warning(default : 4100)
+
+global_variable sigXInputGetState *dynamicXInputGetState = stubXInputGetState;
+#define XInputGetState dynamicXInputGetState
+
+global_variable sigXInputSetState *dynamicXInputSetState = stubXInputSetState;
+#define XInputSetState dynamicXInputSetState
+
+internal void Win32LoadXInput(void) {
+  HMODULE XInputModule = LoadLibraryA("xinput1_3.dll");
+  if (XInputModule != NULL) {
+    XInputGetState =
+        (sigXInputGetState *)GetProcAddress(XInputModule, "XInputGetState");
+    XInputSetState =
+        (sigXInputSetState *)GetProcAddress(XInputModule, "XInputSetState");
+  }
+}
+
+/* XInpput: End */
 
 internal Win32WindowDimensions Win32GetWindowDimension(HWND windowHandle) {
   RECT clientRect;
@@ -67,7 +103,6 @@ internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width,
 
   buffer->width = width;
   buffer->height = height;
-  buffer->bytesPerPixel = 4;
   buffer->pitch = width * buffer->bytesPerPixel;
 
   buffer->info = (BITMAPINFO){
@@ -91,7 +126,8 @@ internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width,
   }
 }
 
-internal void Win32CopyBufferToWindow(HDC deviceContext, LONG windowWidth, LONG windowHeight,
+internal void Win32CopyBufferToWindow(HDC deviceContext, LONG windowWidth,
+                                      LONG windowHeight,
                                       Win32OffscreenBuffer buffer) {
   StretchDIBits(deviceContext,                      // handle to device context
                 0, 0, windowWidth, windowHeight,    // destination rectangle
@@ -115,7 +151,7 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
       OutputDebugStringA("WM_CLOSE\n");
       if (MessageBoxA(windowHandle, "Close", "Handmade Hero", MB_YESNOCANCEL) ==
           IDYES) {
-        running = FALSE;
+        running = false;
         DestroyWindow(windowHandle);
       }
     } break;
@@ -127,15 +163,8 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
     case WM_DESTROY: {
       OutputDebugStringA("WM_DESTROY\n");
       // @NOTE: Handle this as an error (?)
-      running = FALSE;
+      running = false;
       PostQuitMessage(0);
-    } break;
-
-    case WM_KEYDOWN: {
-      if (GetAsyncKeyState(VK_ESCAPE)) {
-        OutputDebugStringA("WM_KEYDOWN:VK_ESCAPE\n");
-        SendMessageA(windowHandle, WM_CLOSE, 0, 0);
-      }
     } break;
 
     case WM_PAINT: {
@@ -143,7 +172,8 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
       HDC deviceContext = BeginPaint(windowHandle, &paint);
       Win32WindowDimensions windowDims = Win32GetWindowDimension(windowHandle);
 
-      Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height, gameBackBuffer);
+      Win32CopyBufferToWindow(deviceContext, windowDims.width,
+                              windowDims.height, gameBackBuffer);
       TextOutA(deviceContext, 0, 0, "Hello, Windows!", 15);
 
       EndPaint(windowHandle, &paint);
@@ -151,6 +181,31 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
 
     case WM_SIZE: {
       OutputDebugString("WM_SIZE\n");
+    } break;
+
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+    case WM_SYSKEYDOWN:
+    case WM_SYSKEYUP: {
+      u8 vkCode = (u8)wParam;
+      bool wasDown = ((lParam >> 30) & 0x1) != 0;
+      bool isDown = ((lParam >> 31) & 0x1) == 0;
+
+      switch (vkCode) {
+        case 'C': {
+          OutputDebugStringA("C: ");
+          if (isDown) OutputDebugStringA("isDown ");
+          if (wasDown) OutputDebugStringA("wasDown");
+          OutputDebugStringA("\n");
+        } break;
+        default:
+          break;
+      }
+
+      if (GetAsyncKeyState(VK_ESCAPE)) {
+        OutputDebugStringA("WM_KEYDOWN:VK_ESCAPE\n");
+        SendMessageA(windowHandle, WM_CLOSE, 0, 0);
+      }
     } break;
 
     default: {
@@ -163,6 +218,8 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
 
 int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
                    _In_ LPSTR commandLine, _In_ int commandShow) {
+  Win32LoadXInput();
+
   Win32ResizeDIBSection(&gameBackBuffer, 1280, 720);
 
   WNDCLASSA windowClass = {
@@ -199,19 +256,34 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
   }
 
   MSG msg = {0};
-  running = TRUE;
+  running = true;
 
   while (running) {
     while (PeekMessageA(&msg, windowHandle, 0, 0, PM_REMOVE)) {
       if (msg.message == WM_QUIT) {
-        running = FALSE;
+        running = false;
       }
       TranslateMessage(&msg);
       DispatchMessageA(&msg);
     }
 
+    // @TODO: Should we poll this more frequently?
+    for (DWORD controller = 0; controller < XUSER_MAX_COUNT; ++controller) {
+      XINPUT_STATE controllerState = {0};
+
+      if (XInputGetState(controller, &controllerState) == ERROR_SUCCESS) {
+        // Controller is connected
+        // @TODO: see if controllerState.dwPacketNumber increments too rapidly
+        // XINPUT_GAMEPAD *gamepad = &controllerState.Gamepad;
+
+      } else {
+        // Controller is not connected
+      }
+    }
+
     renderStuff(gameBackBuffer);
 
+    // CS_OWNDC: https://devblogs.microsoft.com/oldnewthing/20060601-06/?p=31003
     HDC deviceContext = GetDC(windowHandle);
     Win32WindowDimensions windowDims = Win32GetWindowDimension(windowHandle);
     Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height,
