@@ -1,6 +1,6 @@
 #pragma warning(push, 3)
-#include <windows.h>
 #include <dsound.h>
+#include <windows.h>
 #pragma warning(pop)
 #include <stdbool.h>
 #include <stdint.h>
@@ -92,12 +92,30 @@ internal void Win32LoadXInput(void) {
 
 /* DirectSound: Start */
 
+typedef struct Win32SoundBuffer {
+  WORD nChannels;
+  WORD bytesPerSample;
+  WORD bytesPerFrame;
+  DWORD samplesPerSec;
+  DWORD bufferSize;
+  LPDIRECTSOUNDBUFFER buffer;
+} Win32SoundBuffer;
+
 typedef HRESULT WINAPI sigDirectSoundCreate(LPCGUID pcGuidDevice,
                                             LPDIRECTSOUND *ppDS,
                                             LPUNKNOWN pUnkOuter);
 
-internal void Win32InitDirectSound(HWND windowHandle, DWORD samplesPerSec,
-                                   DWORD bufferBytes) {
+internal void Win32InitDirectSound(HWND windowHandle, Win32SoundBuffer *sound) {
+  // NOTE(dans): Sound buffer looks like this
+  //  i16  i16    i16  i16    i16  i16  ...
+  // LEFT RIGHT [LEFT RIGHT] LEFT RIGHT ...
+  //    sample: |<==>|
+  //    frame:  |<========>|
+
+  // Calculated computed fields
+  sound->bytesPerFrame = sound->nChannels * sound->bytesPerSample;
+  sound->bufferSize = sound->bytesPerFrame * sound->samplesPerSec;
+
   // Load the library
   HMODULE DSoundModule = LoadLibraryA("dsound.dll");
   if (DSoundModule == NULL) {
@@ -127,11 +145,10 @@ internal void Win32InitDirectSound(HWND windowHandle, DWORD samplesPerSec,
 
   WAVEFORMATEX waveFormat = {0};
   waveFormat.wFormatTag = WAVE_FORMAT_PCM;
-  waveFormat.nChannels = 2;
-  waveFormat.nSamplesPerSec = samplesPerSec;
-  waveFormat.wBitsPerSample = 16;
-  waveFormat.nBlockAlign =
-      (waveFormat.nChannels * waveFormat.wBitsPerSample) / 8;
+  waveFormat.nChannels = sound->nChannels;
+  waveFormat.wBitsPerSample = (sound->bytesPerSample * 8);
+  waveFormat.nBlockAlign = sound->bytesPerFrame;
+  waveFormat.nSamplesPerSec = sound->samplesPerSec;
   waveFormat.nAvgBytesPerSec =
       waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
 
@@ -149,16 +166,15 @@ internal void Win32InitDirectSound(HWND windowHandle, DWORD samplesPerSec,
     // TODO(casey): Diagnostic
   }
 
-  DSBUFFERDESC secondaryBufferDescription = (DSBUFFERDESC){
+  DSBUFFERDESC soundBufferDescription = (DSBUFFERDESC){
       .dwSize = sizeof(DSBUFFERDESC),
       .dwFlags = 0,
-      .dwBufferBytes = bufferBytes,
+      .dwBufferBytes = sound->bufferSize,
       .dwReserved = 0,
       .lpwfxFormat = &waveFormat,
   };
-  LPDIRECTSOUNDBUFFER secondaryBuffer;
   if (FAILED(IDirectSound_CreateSoundBuffer(
-          directSound, &secondaryBufferDescription, &secondaryBuffer, NULL))) {
+          directSound, &soundBufferDescription, &sound->buffer, NULL))) {
     // TODO(casey): Diagnostic
     return;
   }
@@ -220,8 +236,8 @@ internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width,
 
   SIZE_T bitmapMemorySize =
       ((SIZE_T)width * (SIZE_T)height * buffer->bytesPerPixel);
-  buffer->memory =
-      VirtualAlloc(NULL, bitmapMemorySize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  buffer->memory = VirtualAlloc(NULL, bitmapMemorySize,
+                                MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
   if (buffer->memory == NULL) {
     OutputDebugStringA("Error:VirtualAlloc");
   }
@@ -300,16 +316,16 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
           OutputDebugStringA("\n");
         } break;
         case 'W': {
-          stuffy += 10;
+          stuffy += 16;
         } break;
         case 'S': {
-          stuffy -= 10;
+          stuffy -= 16;
         } break;
         case 'A': {
-          stuffx += 10;
+          stuffx += 16;
         } break;
         case 'D': {
-          stuffx -= 10;
+          stuffx -= 16;
         } break;
         default:
           break;
@@ -373,10 +389,21 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     return 0;
   }
 
-  Win32InitDirectSound(windowHandle, 48000, 48000 * sizeof(i16) * 2);
+#define SAMPLE_PER_SECOND 48000
+#define SQUARE_WAVE_FREQ 256
+#define SQUARE_WAVE_PERIOD (SAMPLE_PER_SECOND / SQUARE_WAVE_FREQ)
+  Win32SoundBuffer sound = {0};
+  sound.nChannels = 2;
+  sound.bytesPerSample = 2;  // 1 or 2
+  sound.samplesPerSec = SAMPLE_PER_SECOND;
+  Win32InitDirectSound(windowHandle, &sound);
+  // NOTE(dans): Should we keep track of the frame index instead?
+  u32 runningFrameIndex = 0;
+  IDirectSoundBuffer_Play(sound.buffer, 0, 0, DSBPLAY_LOOPING);
 
   MSG msg = {0};
   running = true;
+
   while (running) {
     while (PeekMessageA(&msg, windowHandle, 0, 0, PM_REMOVE)) {
       if (msg.message == WM_QUIT) {
@@ -386,13 +413,13 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
       DispatchMessageA(&msg);
     }
 
-    // TODO: Should we poll this more frequently?
+    // TODO(casey): Should we poll this more frequently?
     for (DWORD controller = 0; controller < XUSER_MAX_COUNT; ++controller) {
       XINPUT_STATE controllerState = {0};
 
       if (XInputGetState(controller, &controllerState) == ERROR_SUCCESS) {
         // Controller is connected
-        // TODO: see if controllerState.dwPacketNumber increments too rapidly
+        // TODO(casey): see if .dwPacketNumber increments too rapidly
         // XINPUT_GAMEPAD *gamepad = &controllerState.Gamepad;
 
       } else {
@@ -402,19 +429,74 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
 
     renderStuff(&gameBackBuffer);
 
-    // CS_OWNDC: https://devblogs.microsoft.com/oldnewthing/20060601-06/?p=31003
+    // NOTE(casey): DirectSound output test
+    DWORD playCursor;
+    DWORD writeCursor;
+    if (SUCCEEDED(IDirectSoundBuffer_GetCurrentPosition(
+            sound.buffer, &playCursor, &writeCursor))) {
+      DWORD lockOffset =
+          (runningFrameIndex * sound.bytesPerFrame) % sound.bufferSize;
+      DWORD lockBytes;
+      // TODO(dans): lockOffset + lockBytes gets bigger than the buffer size
+      if (lockOffset < playCursor) {
+        lockBytes = playCursor - lockOffset;
+      } else {
+        lockBytes = (sound.bufferSize - lockOffset);
+        lockBytes += playCursor;
+      }
+      LPVOID lockRegion1;
+      DWORD lockRegion1Bytes;
+      LPVOID lockRegion2;
+      DWORD lockRegion2Bytes;
+      HRESULT lockError = IDirectSoundBuffer_Lock(
+          sound.buffer, lockOffset, lockBytes, &lockRegion1, &lockRegion1Bytes,
+          &lockRegion2, &lockRegion2Bytes, 0);
+      // TODO(casey): Assert region 1 and 2 byte count are valid
+      if (lockError == DS_OK) {
+#define TONE_VOLUME 3000
+        // NOTE(dans): We use i16 because .bitsPerSample is 16
+        // If we want to try i8, then use 8 bits per sample
+        i16 *sampleOut = (i16 *)lockRegion1;
+        DWORD region1FrameCount = lockRegion1Bytes / sound.bytesPerFrame;
+        for (DWORD frameIndex = 0; frameIndex < region1FrameCount;
+             ++frameIndex) {
+          i16 sampleValue = ((runningFrameIndex / (SQUARE_WAVE_PERIOD / 2)) % 2)
+                  ? TONE_VOLUME
+                  : -TONE_VOLUME;
+          *sampleOut++ = sampleValue;
+          *sampleOut++ = sampleValue;
+          runningFrameIndex += 1;
+        }
+        sampleOut = (i16 *)lockRegion2;
+        DWORD region2FrameCount = lockRegion2Bytes / sound.bytesPerFrame;
+        for (DWORD frameIndex = 0; frameIndex < region2FrameCount;
+             ++frameIndex) {
+          i16 sampleValue = ((runningFrameIndex / (SQUARE_WAVE_PERIOD / 2)) % 2)
+                  ? TONE_VOLUME
+                  : -TONE_VOLUME;
+          *sampleOut++ = sampleValue;
+          *sampleOut++ = sampleValue;
+          runningFrameIndex += 1;
+        }
+
+        if (FAILED(IDirectSoundBuffer_Unlock(sound.buffer, lockRegion1,
+                                             lockRegion1Bytes, lockRegion2,
+                                             lockRegion2Bytes))) {
+          OutputDebugStringA("Error:Unlock");
+        }
+      } else {
+      }
+    } else {
+    }
+
+    // CS_OWNDC:
+    // https://devblogs.microsoft.com/oldnewthing/20060601-06/?p=31003
     HDC deviceContext = GetDC(windowHandle);
     Win32WindowDimensions windowDims = Win32GetWindowDimension(windowHandle);
     Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height,
                             &gameBackBuffer);
     ReleaseDC(windowHandle, deviceContext);
-
-    stuffx += 1;
-    stuffy += 2;
   }
-
-  // MessageBoxA(NULL, "This is Handmade Hero", "Handmade Hero",
-  //            MB_OK | MB_ICONINFORMATION);
 
   return (int)msg.wParam;
 
