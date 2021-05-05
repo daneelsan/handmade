@@ -2,6 +2,8 @@
 #include <dsound.h>
 #include <windows.h>
 #pragma warning(pop)
+// TODO(casey): Implement sinf ourselves
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <xinput.h>
@@ -9,6 +11,8 @@
 #define internal static
 #define global_variable static
 #define local_persist static
+
+#define PI_32 3.14159265359f
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -19,6 +23,9 @@ typedef int8_t i8;
 typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
+
+typedef float f32;
+typedef double f64;
 
 // NOTE: `running` is global for now
 global_variable bool running;
@@ -70,6 +77,9 @@ internal void Win32LoadXInput(void) {
     // TODO(casey): Diagnostic
     XInputModule = LoadLibraryA("xinput1_3.dll");
   }
+  if (XInputModule == NULL) {
+    XInputModule = LoadLibraryA("xinput9_1_0.dll");
+  }
 
   if (XInputModule != NULL) {
     XInputGetState =
@@ -92,20 +102,26 @@ internal void Win32LoadXInput(void) {
 
 /* DirectSound: Start */
 
-typedef struct Win32SoundBuffer {
+typedef struct Win32SoundOutput {
   WORD nChannels;
   WORD bytesPerSample;
   WORD bytesPerFrame;
   DWORD samplesPerSec;
+  f32 waveFrequency;
+  f32 wavePeriod;
+  f32 tSine;
+  u16 toneVolume;
+  int latency;
+  u32 runningFrameIndex;
   DWORD bufferSize;
   LPDIRECTSOUNDBUFFER buffer;
-} Win32SoundBuffer;
+} Win32SoundOutput;
 
 typedef HRESULT WINAPI sigDirectSoundCreate(LPCGUID pcGuidDevice,
                                             LPDIRECTSOUND *ppDS,
                                             LPUNKNOWN pUnkOuter);
 
-internal void Win32InitDirectSound(HWND windowHandle, Win32SoundBuffer *sound) {
+internal void Win32InitDirectSound(HWND windowHandle, Win32SoundOutput *sound) {
   // NOTE(dans): Sound buffer looks like this
   //  i16  i16    i16  i16    i16  i16  ...
   // LEFT RIGHT [LEFT RIGHT] LEFT RIGHT ...
@@ -178,8 +194,51 @@ internal void Win32InitDirectSound(HWND windowHandle, Win32SoundBuffer *sound) {
     // TODO(casey): Diagnostic
     return;
   }
+}
 
-  // Start it playing!
+internal void Win32FillSoundBuffer(Win32SoundOutput *sound, DWORD lockOffset,
+                                   DWORD lockBytes) {
+  LPVOID lockRegion1;
+  DWORD lockRegion1Bytes;
+  LPVOID lockRegion2;
+  DWORD lockRegion2Bytes;
+  HRESULT lockError = IDirectSoundBuffer_Lock(
+      sound->buffer, lockOffset, lockBytes, &lockRegion1, &lockRegion1Bytes,
+      &lockRegion2, &lockRegion2Bytes, 0);
+  // TODO(casey): Assert region 1 and 2 byte count are valid
+  if (lockError == DS_OK) {
+    // NOTE(dans): We use i16 because .bitsPerSample is 16
+    // If we want to try i8, then use 8 bits per sample
+    i16 *sampleOut = (i16 *)lockRegion1;
+    DWORD region1FrameCount = lockRegion1Bytes / sound->bytesPerFrame;
+    for (DWORD frameIndex = 0; frameIndex < region1FrameCount; ++frameIndex) {
+      f32 sineValue = sinf(sound->tSine);
+      i16 sampleValue = (i16)(sineValue * sound->toneVolume);
+      *sampleOut++ = sampleValue;
+      *sampleOut++ = sampleValue;
+
+      sound->tSine += 2.0f * PI_32 / sound->wavePeriod;
+      sound->runningFrameIndex += 1;
+    }
+    sampleOut = (i16 *)lockRegion2;
+    DWORD region2FrameCount = lockRegion2Bytes / sound->bytesPerFrame;
+    for (DWORD frameIndex = 0; frameIndex < region2FrameCount; ++frameIndex) {
+      f32 sineValue = sinf(sound->tSine);
+      i16 sampleValue = (i16)(sineValue * sound->toneVolume);
+      *sampleOut++ = sampleValue;
+      *sampleOut++ = sampleValue;
+
+      sound->tSine += 2.0f * PI_32 / sound->wavePeriod;
+      sound->runningFrameIndex += 1;
+    }
+
+    if (FAILED(IDirectSoundBuffer_Unlock(sound->buffer, lockRegion1,
+                                         lockRegion1Bytes, lockRegion2,
+                                         lockRegion2Bytes))) {
+      OutputDebugStringA("Error:Unlock");
+    }
+  } else {
+  }
 }
 
 /* DirectSound: End*/
@@ -389,16 +448,16 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     return 0;
   }
 
-#define SAMPLE_PER_SECOND 48000
-#define SQUARE_WAVE_FREQ 256
-#define SQUARE_WAVE_PERIOD (SAMPLE_PER_SECOND / SQUARE_WAVE_FREQ)
-  Win32SoundBuffer sound = {0};
+  Win32SoundOutput sound = {0};
   sound.nChannels = 2;
   sound.bytesPerSample = 2;  // 1 or 2
-  sound.samplesPerSec = SAMPLE_PER_SECOND;
+  sound.toneVolume = 3000;
+  sound.samplesPerSec = 48000;
+  sound.waveFrequency = 512;
+  sound.wavePeriod = sound.samplesPerSec / sound.waveFrequency;
+  sound.latency = sound.samplesPerSec / 15;  // in seconds
   Win32InitDirectSound(windowHandle, &sound);
-  // NOTE(dans): Should we keep track of the frame index instead?
-  u32 runningFrameIndex = 0;
+  Win32FillSoundBuffer(&sound, 0, sound.bufferSize);
   IDirectSoundBuffer_Play(sound.buffer, 0, 0, DSBPLAY_LOOPING);
 
   MSG msg = {0};
@@ -420,7 +479,15 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
       if (XInputGetState(controller, &controllerState) == ERROR_SUCCESS) {
         // Controller is connected
         // TODO(casey): see if .dwPacketNumber increments too rapidly
-        // XINPUT_GAMEPAD *gamepad = &controllerState.Gamepad;
+        XINPUT_GAMEPAD *gamepad = &controllerState.Gamepad;
+
+        i16 stickY = gamepad->sThumbLY;
+        // Si16 sitckX = gamepad->sThumbLX;
+
+        // TODO(casey): Deadzone handling properly
+
+        sound.waveFrequency = 512.0f - (256.0f * ((f32)stickY / 30000.0f));
+        sound.wavePeriod = sound.samplesPerSec / sound.waveFrequency;
 
       } else {
         // Controller is not connected
@@ -430,62 +497,25 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     renderStuff(&gameBackBuffer);
 
     // NOTE(casey): DirectSound output test
+    // TODO(dans): Might want to not do a thing if playCursor hasn't changed
+    // between loops
     DWORD playCursor;
     DWORD writeCursor;
     if (SUCCEEDED(IDirectSoundBuffer_GetCurrentPosition(
             sound.buffer, &playCursor, &writeCursor))) {
       DWORD lockOffset =
-          (runningFrameIndex * sound.bytesPerFrame) % sound.bufferSize;
+          (sound.runningFrameIndex * sound.bytesPerFrame) % sound.bufferSize;
+
+      // TODO(casey): Change this to using a lower latency offset from the play
+      // cursor when we actually start having sound effects
       DWORD lockBytes;
-      // TODO(dans): lockOffset + lockBytes gets bigger than the buffer size
-      if (lockOffset < playCursor) {
+      if (lockOffset <= playCursor) {
         lockBytes = playCursor - lockOffset;
       } else {
         lockBytes = (sound.bufferSize - lockOffset);
         lockBytes += playCursor;
       }
-      LPVOID lockRegion1;
-      DWORD lockRegion1Bytes;
-      LPVOID lockRegion2;
-      DWORD lockRegion2Bytes;
-      HRESULT lockError = IDirectSoundBuffer_Lock(
-          sound.buffer, lockOffset, lockBytes, &lockRegion1, &lockRegion1Bytes,
-          &lockRegion2, &lockRegion2Bytes, 0);
-      // TODO(casey): Assert region 1 and 2 byte count are valid
-      if (lockError == DS_OK) {
-#define TONE_VOLUME 3000
-        // NOTE(dans): We use i16 because .bitsPerSample is 16
-        // If we want to try i8, then use 8 bits per sample
-        i16 *sampleOut = (i16 *)lockRegion1;
-        DWORD region1FrameCount = lockRegion1Bytes / sound.bytesPerFrame;
-        for (DWORD frameIndex = 0; frameIndex < region1FrameCount;
-             ++frameIndex) {
-          i16 sampleValue = ((runningFrameIndex / (SQUARE_WAVE_PERIOD / 2)) % 2)
-                  ? TONE_VOLUME
-                  : -TONE_VOLUME;
-          *sampleOut++ = sampleValue;
-          *sampleOut++ = sampleValue;
-          runningFrameIndex += 1;
-        }
-        sampleOut = (i16 *)lockRegion2;
-        DWORD region2FrameCount = lockRegion2Bytes / sound.bytesPerFrame;
-        for (DWORD frameIndex = 0; frameIndex < region2FrameCount;
-             ++frameIndex) {
-          i16 sampleValue = ((runningFrameIndex / (SQUARE_WAVE_PERIOD / 2)) % 2)
-                  ? TONE_VOLUME
-                  : -TONE_VOLUME;
-          *sampleOut++ = sampleValue;
-          *sampleOut++ = sampleValue;
-          runningFrameIndex += 1;
-        }
-
-        if (FAILED(IDirectSoundBuffer_Unlock(sound.buffer, lockRegion1,
-                                             lockRegion1Bytes, lockRegion2,
-                                             lockRegion2Bytes))) {
-          OutputDebugStringA("Error:Unlock");
-        }
-      } else {
-      }
+      Win32FillSoundBuffer(&sound, lockOffset, lockBytes);
     } else {
     }
 
