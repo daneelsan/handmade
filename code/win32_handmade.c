@@ -411,6 +411,10 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
 
 int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
                    _In_ LPSTR commandLine, _In_ int commandShow) {
+  LARGE_INTEGER performanceFrequency;
+  QueryPerformanceFrequency(&performanceFrequency);
+  LONGLONG countsPerSecond = performanceFrequency.QuadPart;
+
   Win32LoadXInput();
 
   Win32ResizeDIBSection(&gameBackBuffer, 1280, 720);
@@ -462,6 +466,10 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
 
   MSG msg = {0};
   running = true;
+
+  u64 previousCycleCount = __rdtsc();
+  LARGE_INTEGER previousPerformanceCounter;
+  QueryPerformanceCounter(&previousPerformanceCounter);
 
   while (running) {
     while (PeekMessageA(&msg, windowHandle, 0, 0, PM_REMOVE)) {
@@ -526,6 +534,25 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height,
                             &gameBackBuffer);
     ReleaseDC(windowHandle, deviceContext);
+
+    u64 cycleCount = __rdtsc();
+
+    LARGE_INTEGER performanceCounter;
+    QueryPerformanceCounter(&performanceCounter);
+
+    u64 cyclesElapsed = cycleCount - previousCycleCount;
+    i32 megaCyclesElapsed = (i32)(cyclesElapsed / 1000000);
+
+    LONGLONG countsPerFrame = performanceCounter.QuadPart - previousPerformanceCounter.QuadPart;
+    i32 fps = (i32)(countsPerSecond / countsPerFrame);
+    i32 msPerFrame = (i32)(1000 * countsPerFrame / countsPerSecond);
+
+    char buffer[256];
+    wsprintfA(buffer, "%d FPS, %dms/f, %dMc/f\n", fps, msPerFrame, megaCyclesElapsed);
+    OutputDebugStringA(buffer);
+
+    previousCycleCount = cycleCount;
+    previousPerformanceCounter = performanceCounter;
   }
 
   return (int)msg.wParam;

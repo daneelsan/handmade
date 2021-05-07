@@ -7,6 +7,6 @@ pushd ..\build
 del *.pdb > NUL 2> NUL
 
 echo %cd%
-cl -FAsc -Zi ..\code\win32_handmade.c User32.lib Gdi32.lib
+cl -O2 -FAsc -Zi ..\code\win32_handmade.c User32.lib Gdi32.lib
 
 popd
