@@ -19,6 +19,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="code\handmade.c" />
     <ClCompile Include="code\win32_handmade.c" />
   </ItemGroup>
   <ItemGroup>
@@ -26,6 +27,9 @@
     <None Include="code\build.bat" />
     <None Include="misc\4ed.bat" />
     <None Include="misc\shell.bat" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="code\handmade.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>

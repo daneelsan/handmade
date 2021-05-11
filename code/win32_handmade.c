@@ -1,18 +1,24 @@
-#pragma warning(push, 3)
-#include <dsound.h>
-#include <windows.h>
-#pragma warning(pop)
-// TODO(casey): Implement sinf ourselves
-#include <math.h>
-#include <stdbool.h>
+/*
+  TODO(casey): THIS IS NOT THE FINAL PLATFORM LAYER
+  [ ] Saved game locations
+  [ ] Getting a handle to our own executable file
+  [ ] Asset loading path
+  [ ] Threading (launch a thread)
+  [ ] Raw input (support for multiple keyboards)
+  [ ] Sleep/timeBeginPeriod
+  [ ] ClipCursor() (for miltimonitor support)
+  [ ] Fullscreen support
+  [ ] WM_SETCURSOR (control cursor visibility)
+  [ ] QueryCancelAutoplay
+  [ ] WM_ACTIVATEAPP (for when we are not the active application)
+  [ ] Blit speed improvements (BitBlt)
+  [ ] Hardware acceleration (OpenGL or Direct3D or both?)
+  [ ] GetKeyboardLayout (for French keyboards, internaltional WASD support)
+
+  And more!
+*/
+
 #include <stdint.h>
-#include <xinput.h>
-
-#define internal static
-#define global_variable static
-#define local_persist static
-
-#define PI_32 3.14159265359f
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -24,8 +30,27 @@ typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
 
+typedef i32 b32;
+
+#pragma warning(push, 3)
+#include <dsound.h>
+#include <windows.h>
+#pragma warning(pop)
+// TODO(casey): Implement sinf ourselves
+#include <math.h>
+#include <stdbool.h>
+#include <xinput.h>
+
+#define internal static
+#define global_variable static
+#define local_persist static
+
+#define PI_32 3.14159265359f
+
 typedef float f32;
 typedef double f64;
+
+#include "handmade.c"
 
 // NOTE: `running` is global for now
 global_variable bool running;
@@ -42,6 +67,8 @@ typedef struct Win32OffscreenBuffer {
 } Win32OffscreenBuffer;
 
 global_variable Win32OffscreenBuffer gameBackBuffer = {.bytesPerPixel = 4};
+global_variable int stuffx;
+global_variable int stuffy;
 
 typedef struct Win32WindowDimensions {
   int width;
@@ -50,10 +77,8 @@ typedef struct Win32WindowDimensions {
 
 /* XInpput: Start */
 
-#define X_INPUT_GET_STATE(func) \
-  DWORD WINAPI func(DWORD dwUserIndex, XINPUT_STATE *pState)
-#define X_INPUT_SET_STATE(func) \
-  DWORD WINAPI func(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
+#define X_INPUT_GET_STATE(func) DWORD WINAPI func(DWORD dwUserIndex, XINPUT_STATE *pState)
+#define X_INPUT_SET_STATE(func) DWORD WINAPI func(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
 
 // TODO(dans): Try this with function pointer instead
 typedef X_INPUT_GET_STATE(sigXInputGetState);
@@ -82,14 +107,12 @@ internal void Win32LoadXInput(void) {
   }
 
   if (XInputModule != NULL) {
-    XInputGetState =
-        (sigXInputGetState *)GetProcAddress(XInputModule, "XInputGetState");
+    XInputGetState = (sigXInputGetState *)GetProcAddress(XInputModule, "XInputGetState");
     if (XInputGetState == NULL) {
       XInputGetState = stubXInputGetState;
     }
 
-    XInputSetState =
-        (sigXInputSetState *)GetProcAddress(XInputModule, "XInputSetState");
+    XInputSetState = (sigXInputSetState *)GetProcAddress(XInputModule, "XInputSetState");
     if (XInputSetState == NULL) {
       XInputSetState = stubXInputSetState;
     }
@@ -117,9 +140,7 @@ typedef struct Win32SoundOutput {
   LPDIRECTSOUNDBUFFER buffer;
 } Win32SoundOutput;
 
-typedef HRESULT WINAPI sigDirectSoundCreate(LPCGUID pcGuidDevice,
-                                            LPDIRECTSOUND *ppDS,
-                                            LPUNKNOWN pUnkOuter);
+typedef HRESULT WINAPI sigDirectSoundCreate(LPCGUID pcGuidDevice, LPDIRECTSOUND *ppDS, LPUNKNOWN pUnkOuter);
 
 internal void Win32InitDirectSound(HWND windowHandle, Win32SoundOutput *sound) {
   // NOTE(dans): Sound buffer looks like this
@@ -139,8 +160,7 @@ internal void Win32InitDirectSound(HWND windowHandle, Win32SoundOutput *sound) {
     return;
   }
 
-  sigDirectSoundCreate *DirectSoundCreate =
-      (sigDirectSoundCreate *)GetProcAddress(DSoundModule, "DirectSoundCreate");
+  sigDirectSoundCreate *DirectSoundCreate = (sigDirectSoundCreate *)GetProcAddress(DSoundModule, "DirectSoundCreate");
   if (DirectSoundCreate == NULL) {
     // TODO(casey): Diagnostic
     return;
@@ -153,8 +173,7 @@ internal void Win32InitDirectSound(HWND windowHandle, Win32SoundOutput *sound) {
     return;
   }
 
-  if (FAILED(IDirectSound_SetCooperativeLevel(directSound, windowHandle,
-                                              DSSCL_PRIORITY))) {
+  if (FAILED(IDirectSound_SetCooperativeLevel(directSound, windowHandle, DSSCL_PRIORITY))) {
     // TODO(casey): Diagnostic
     return;
   }
@@ -165,16 +184,14 @@ internal void Win32InitDirectSound(HWND windowHandle, Win32SoundOutput *sound) {
   waveFormat.wBitsPerSample = (sound->bytesPerSample * 8);
   waveFormat.nBlockAlign = sound->bytesPerFrame;
   waveFormat.nSamplesPerSec = sound->samplesPerSec;
-  waveFormat.nAvgBytesPerSec =
-      waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
+  waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
 
   // NOTE(dans): Not a buffer! Just handle to the primary sound device
   DSBUFFERDESC primaryBufferDescription = {0};
   primaryBufferDescription.dwSize = sizeof(DSBUFFERDESC);
   primaryBufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
   LPDIRECTSOUNDBUFFER primaryBuffer;
-  if (SUCCEEDED(IDirectSound_CreateSoundBuffer(
-          directSound, &primaryBufferDescription, &primaryBuffer, NULL))) {
+  if (SUCCEEDED(IDirectSound_CreateSoundBuffer(directSound, &primaryBufferDescription, &primaryBuffer, NULL))) {
     if (FAILED(IDirectSoundBuffer_SetFormat(primaryBuffer, &waveFormat))) {
       // TODO(casey): Diagnostic
     }
@@ -189,22 +206,19 @@ internal void Win32InitDirectSound(HWND windowHandle, Win32SoundOutput *sound) {
       .dwReserved = 0,
       .lpwfxFormat = &waveFormat,
   };
-  if (FAILED(IDirectSound_CreateSoundBuffer(
-          directSound, &soundBufferDescription, &sound->buffer, NULL))) {
+  if (FAILED(IDirectSound_CreateSoundBuffer(directSound, &soundBufferDescription, &sound->buffer, NULL))) {
     // TODO(casey): Diagnostic
     return;
   }
 }
 
-internal void Win32FillSoundBuffer(Win32SoundOutput *sound, DWORD lockOffset,
-                                   DWORD lockBytes) {
+internal void Win32FillSoundBuffer(Win32SoundOutput *sound, DWORD lockOffset, DWORD lockBytes) {
   LPVOID lockRegion1;
   DWORD lockRegion1Bytes;
   LPVOID lockRegion2;
   DWORD lockRegion2Bytes;
   HRESULT lockError = IDirectSoundBuffer_Lock(
-      sound->buffer, lockOffset, lockBytes, &lockRegion1, &lockRegion1Bytes,
-      &lockRegion2, &lockRegion2Bytes, 0);
+      sound->buffer, lockOffset, lockBytes, &lockRegion1, &lockRegion1Bytes, &lockRegion2, &lockRegion2Bytes, 0);
   // TODO(casey): Assert region 1 and 2 byte count are valid
   if (lockError == DS_OK) {
     // NOTE(dans): We use i16 because .bitsPerSample is 16
@@ -232,9 +246,8 @@ internal void Win32FillSoundBuffer(Win32SoundOutput *sound, DWORD lockOffset,
       sound->runningFrameIndex += 1;
     }
 
-    if (FAILED(IDirectSoundBuffer_Unlock(sound->buffer, lockRegion1,
-                                         lockRegion1Bytes, lockRegion2,
-                                         lockRegion2Bytes))) {
+    if (FAILED(
+            IDirectSoundBuffer_Unlock(sound->buffer, lockRegion1, lockRegion1Bytes, lockRegion2, lockRegion2Bytes))) {
       OutputDebugStringA("Error:Unlock");
     }
   } else {
@@ -253,26 +266,7 @@ internal Win32WindowDimensions Win32GetWindowDimension(HWND windowHandle) {
   };
 }
 
-global_variable int stuffx;
-global_variable int stuffy;
-internal void renderStuff(Win32OffscreenBuffer *buffer) {
-  // TODO: See what optimizer does in value vs reference
-  u8 *row = (u8 *)buffer->memory;
-
-  for (int y = 0; y < buffer->height; ++y) {
-    u32 *pixel = (u32 *)row;
-    for (int x = 0; x < buffer->width; ++x) {
-      u8 green = (u8)(x + stuffx);
-      u8 blue = (u8)(y + stuffy);
-
-      *pixel = (green << 8) + blue;
-      pixel += 1;
-    }
-    row += buffer->pitch;
-  }
-}
-internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width,
-                                    int height) {
+internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width, int height) {
   if (buffer->memory != NULL) {
     VirtualFree(buffer->memory, 0, MEM_RELEASE);
   }
@@ -293,23 +287,30 @@ internal void Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width,
           },
   };
 
-  SIZE_T bitmapMemorySize =
-      ((SIZE_T)width * (SIZE_T)height * buffer->bytesPerPixel);
-  buffer->memory = VirtualAlloc(NULL, bitmapMemorySize,
-                                MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  SIZE_T bitmapMemorySize = ((SIZE_T)width * (SIZE_T)height * buffer->bytesPerPixel);
+  buffer->memory = VirtualAlloc(NULL, bitmapMemorySize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
   if (buffer->memory == NULL) {
     OutputDebugStringA("Error:VirtualAlloc");
   }
 }
 
-internal void Win32CopyBufferToWindow(HDC deviceContext, LONG windowWidth,
+internal void Win32CopyBufferToWindow(HDC deviceContext,
+                                      LONG windowWidth,
                                       LONG windowHeight,
                                       Win32OffscreenBuffer *buffer) {
-  StretchDIBits(deviceContext,                    // handle to device context
-                0, 0, windowWidth, windowHeight,  // destination rectangle
-                0, 0, buffer->width, buffer->height,  // source rectangle
-                buffer->memory, &buffer->info,  // pointer to DIB and its info
-                DIB_RGB_COLORS, SRCCOPY);
+  StretchDIBits(deviceContext,  // handle to device context
+                0,
+                0,
+                windowWidth,
+                windowHeight,  // destination rectangle
+                0,
+                0,
+                buffer->width,
+                buffer->height,  // source rectangle
+                buffer->memory,
+                &buffer->info,  // pointer to DIB and its info
+                DIB_RGB_COLORS,
+                SRCCOPY);
 }
 
 LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
@@ -325,8 +326,7 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
 
     case WM_CLOSE: {
       OutputDebugStringA("WM_CLOSE\n");
-      if (MessageBoxA(windowHandle, "Close", "Handmade Hero", MB_YESNOCANCEL) ==
-          IDYES) {
+      if (MessageBoxA(windowHandle, "Close", "Handmade Hero", MB_YESNOCANCEL) == IDYES) {
         running = false;
         DestroyWindow(windowHandle);
       }
@@ -348,8 +348,7 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
       HDC deviceContext = BeginPaint(windowHandle, &paint);
       Win32WindowDimensions windowDims = Win32GetWindowDimension(windowHandle);
 
-      Win32CopyBufferToWindow(deviceContext, windowDims.width,
-                              windowDims.height, &gameBackBuffer);
+      Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height, &gameBackBuffer);
       TextOutA(deviceContext, 0, 0, "Hello, Windows!", 15);
 
       EndPaint(windowHandle, &paint);
@@ -409,8 +408,10 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
   return result;
 }
 
-int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
-                   _In_ LPSTR commandLine, _In_ int commandShow) {
+int WINAPI WinMain(_In_ HINSTANCE instance,
+                   _In_opt_ HINSTANCE previousInstance,
+                   _In_ LPSTR commandLine,
+                   _In_ int commandShow) {
   LARGE_INTEGER performanceFrequency;
   QueryPerformanceFrequency(&performanceFrequency);
   LONGLONG countsPerSecond = performanceFrequency.QuadPart;
@@ -420,7 +421,7 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
   Win32ResizeDIBSection(&gameBackBuffer, 1280, 720);
 
   WNDCLASSA windowClass = {
-      .style = CS_HREDRAW | CS_VREDRAW,  // redraw window when size changes
+      .style = CS_HREDRAW | CS_VREDRAW,        // redraw window when size changes
       .lpfnWndProc = Win32MainWindowCallback,  // pointer to window procedure
       .hInstance = instance,
       .hIcon = NULL,  // handle to the class icon
@@ -433,20 +434,19 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     return 0;
   }
 
-  HWND windowHandle =
-      CreateWindowExA(0,                          // extended window style
-                      windowClass.lpszClassName,  // window class name
-                      "Handmade Hero",            // window name
-                      WS_OVERLAPPEDWINDOW | WS_VISIBLE,  // window style
-                      CW_USEDEFAULT,                     // x
-                      CW_USEDEFAULT,                     // y
-                      CW_USEDEFAULT,                     // width
-                      CW_USEDEFAULT,                     // height
-                      0,                                 // parent window handle
-                      0,                                 // menu handle
-                      instance,  // module's instance handle
-                      0          // pointer to value of WM_CREATE
-      );
+  HWND windowHandle = CreateWindowExA(0,                                 // extended window style
+                                      windowClass.lpszClassName,         // window class name
+                                      "Handmade Hero",                   // window name
+                                      WS_OVERLAPPEDWINDOW | WS_VISIBLE,  // window style
+                                      CW_USEDEFAULT,                     // x
+                                      CW_USEDEFAULT,                     // y
+                                      CW_USEDEFAULT,                     // width
+                                      CW_USEDEFAULT,                     // height
+                                      0,                                 // parent window handle
+                                      0,                                 // menu handle
+                                      instance,                          // module's instance handle
+                                      0                                  // pointer to value of WM_CREATE
+  );
   if (windowHandle == NULL) {
     OutputDebugStringA("Error:CreateWindowExA\n");
     return 0;
@@ -502,20 +502,22 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
       }
     }
 
-    renderStuff(&gameBackBuffer);
+    GameOffscreenBuffer gameBuffer = {
+        .memory = gameBackBuffer.memory,
+        .width = gameBackBuffer.width,
+        .height = gameBackBuffer.height,
+        .pitch = gameBackBuffer.pitch,
+    };
+    GameUpdateAndRender(&gameBuffer, stuffx, stuffy);
+    // renderStuff(&gameBackBuffer);
 
     // NOTE(casey): DirectSound output test
     // TODO(dans): Might want to not do a thing if playCursor hasn't changed
     // between loops
     DWORD playCursor;
     DWORD writeCursor;
-    if (SUCCEEDED(IDirectSoundBuffer_GetCurrentPosition(
-            sound.buffer, &playCursor, &writeCursor))) {
-      DWORD lockOffset =
-          (sound.runningFrameIndex * sound.bytesPerFrame) % sound.bufferSize;
-
-      // TODO(casey): Change this to using a lower latency offset from the play
-      // cursor when we actually start having sound effects
+    if (SUCCEEDED(IDirectSoundBuffer_GetCurrentPosition(sound.buffer, &playCursor, &writeCursor))) {
+      DWORD lockOffset = (sound.runningFrameIndex * sound.bytesPerFrame) % sound.bufferSize;
       DWORD lockBytes;
       if (lockOffset <= playCursor) {
         lockBytes = playCursor - lockOffset;
@@ -531,8 +533,7 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     // https://devblogs.microsoft.com/oldnewthing/20060601-06/?p=31003
     HDC deviceContext = GetDC(windowHandle);
     Win32WindowDimensions windowDims = Win32GetWindowDimension(windowHandle);
-    Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height,
-                            &gameBackBuffer);
+    Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height, &gameBackBuffer);
     ReleaseDC(windowHandle, deviceContext);
 
     u64 cycleCount = __rdtsc();
@@ -547,9 +548,11 @@ int WINAPI WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previousInstance,
     i32 fps = (i32)(countsPerSecond / countsPerFrame);
     i32 msPerFrame = (i32)(1000 * countsPerFrame / countsPerSecond);
 
+#if 0
     char buffer[256];
     wsprintfA(buffer, "%d FPS, %dms/f, %dMc/f\n", fps, msPerFrame, megaCyclesElapsed);
     OutputDebugStringA(buffer);
+#endif
 
     previousCycleCount = cycleCount;
     previousPerformanceCounter = performanceCounter;

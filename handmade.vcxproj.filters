@@ -18,6 +18,9 @@
     <ClCompile Include="code\win32_handmade.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="code\handmade.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="code\build.bat">
@@ -30,5 +33,10 @@
       <Filter>Source Files</Filter>
     </None>
     <None Include=".gitignore" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="code\handmade.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
