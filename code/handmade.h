@@ -23,6 +23,8 @@ typedef int64_t i64;
 
 typedef i32 b32;
 
+#define ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
+
 /*
   TODO(casey): Services that the plaform layer provides to the game
 */
@@ -31,6 +33,8 @@ typedef i32 b32;
   NOTE(casey): Services that the game provides to the platform layer
 */
 
+/* Video */
+
 typedef struct GameOffscreenBuffer {
   void *memory;
   int width;
@@ -38,15 +42,55 @@ typedef struct GameOffscreenBuffer {
   int pitch;
 } GameOffscreenBuffer;
 
+/* Sound */
+
 typedef struct GameSoundBuffer {
   int samplesPerSec;
   int outputFramesCount;
   i16 *samples;
 } GameSoundBuffer;
 
+/* Input */
+
+typedef struct GameAnalogStickState {
+  f32 start;
+  f32 min;
+  f32 max;
+  f32 end;
+} GameAnalogStickState;
+
+typedef struct GameButtonState {
+  int halfTransitionCount;
+  b32 endedDown;
+} GameButtonState;
+
+typedef struct GameControllerInput {
+  b32 isAnalog;
+
+  GameAnalogStickState x;
+  GameAnalogStickState y;
+
+  union {
+    GameButtonState buttons[6];
+    struct {
+      GameButtonState up;
+      GameButtonState down;
+      GameButtonState left;
+      GameButtonState right;
+      GameButtonState leftShoulder;
+      GameButtonState rightShoulder;
+    } button;
+  };
+} GameControllerInput;
+
+typedef struct GameInput {
+  GameControllerInput controllers[4];
+} GameInput;
+
+/* Render */
+
 // Arguments: timing, input, sound buffer to use, bitmap buffer to use
-internal void GameUpdateAndRender(
-    GameOffscreenBuffer *screen, int blueOffset, int greenOffset, GameSoundBuffer *sound, f32 waveFrequency);
+internal void GameUpdateAndRender(GameOffscreenBuffer *screen, GameSoundBuffer *sound, GameInput *input);
 
 #define HANDMADE_H
 #endif
