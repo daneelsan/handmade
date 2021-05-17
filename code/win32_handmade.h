@@ -8,8 +8,6 @@ typedef struct Win32OffscreenBuffer {
   int height;
   int bytesPerPixel;
   int pitch;
-
-  u32 _padding;
 } Win32OffscreenBuffer;
 
 typedef struct Win32WindowDimensions {

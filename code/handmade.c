@@ -1,5 +1,14 @@
 #include "handmade.h"
 
+// TODO(casey): Implement sinf ourselves
+#include "math.h"  // sinf
+
+typedef struct GameState {
+  int toneHz;
+  int blueOffset;
+  int greenOffset;
+} GameState;
+
 // TODO(casey): Allow sample offsets here for more robust platform options
 internal void GameOutputSound(GameSoundBuffer *sound, int waveFrequency) {
   local_persist f32 tSine;
@@ -34,25 +43,36 @@ internal void RenderWeirdGradient(GameOffscreenBuffer *screen, int blueOffset, i
   }
 }
 
-internal void GameUpdateAndRender(GameOffscreenBuffer *screen, GameSoundBuffer *sound, GameInput *input) {
-  local_persist int blueOffset = 0;
-  local_persist int greenOffset = 0;
-  local_persist int toneHz = 256;
+internal void GameUpdateAndRender(GameMemory *memory,
+                                  GameOffscreenBuffer *screen,
+                                  GameSoundBuffer *sound,
+                                  GameInput *input) {
+  ASSERT(sizeof(GameState) <= memory->permanent.size);
+
+  GameState *gameState = (GameState *)memory->permanent.storage;
+  if (!memory->isInitialized) {
+    gameState->toneHz = 256;
+    gameState->blueOffset = 0;
+    gameState->greenOffset = 0;
+
+    // NOTE(casey): This may be more appropriate to do in the platform layer
+    memory->isInitialized = TRUE;
+  }
 
   GameControllerInput *input0 = &input->controllers[0];
   if (input0->isAnalog) {
     // NOTE(casey): Use analog movement tuning
-    blueOffset += (int)(4.0f * input0->x.end);
-    toneHz += (int)(128.0f * input0->y.end);
+    gameState->blueOffset += (int)(4.0f * input0->x.end);
+    gameState->toneHz = 256 + (int)(128.0f * input0->y.end);
   } else {
     // NOTE(casey): Use digital movement tuning
   }
 
   if (input0->button.down.endedDown) {
-    greenOffset += 1;
+    gameState->greenOffset += 1;
   }
 
   // TODO(casey): Allow sample offsets here for more robust platform options
-  GameOutputSound(sound, toneHz);
-  RenderWeirdGradient(screen, blueOffset, greenOffset);
+  GameOutputSound(sound, gameState->toneHz);
+  RenderWeirdGradient(screen, gameState->blueOffset, gameState->greenOffset);
 }

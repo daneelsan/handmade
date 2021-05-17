@@ -22,14 +22,14 @@
 #include <dsound.h>
 #include <windows.h>
 #pragma warning(pop)
-// TODO(casey): Implement sinf ourselves
-#include <math.h>
 #include <stdbool.h>
 #include <xinput.h>
 
 #include "handmade.c"
 #include "handmade.h"
 #include "win32_handmade.h"
+
+#pragma warning(disable : 5045)  // Qspectre
 
 // NOTE: `running` is global for now
 global_variable bool running;
@@ -309,7 +309,7 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
     case WM_CLOSE: {
       OutputDebugStringA("WM_CLOSE\n");
       if (MessageBoxA(windowHandle, "Close", "Handmade Hero", MB_YESNOCANCEL) == IDYES) {
-        running = false;
+        running = FALSE;
         DestroyWindow(windowHandle);
       }
     } break;
@@ -321,7 +321,7 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
     case WM_DESTROY: {
       OutputDebugStringA("WM_DESTROY\n");
       // NOTE: Handle this as an error (?)
-      running = false;
+      running = FALSE;
       PostQuitMessage(0);
     } break;
 
@@ -378,7 +378,7 @@ LRESULT CALLBACK Win32MainWindowCallback(_In_ HWND windowHandle,
 
       BOOL altKeyDown = (lParam >> 29) & 0x1;
       if (altKeyDown && (vkCode == VK_F4)) {
-        running = false;
+        running = FALSE;
       }
     } break;
 
@@ -445,10 +445,14 @@ int WINAPI WinMain(_In_ HINSTANCE instance,
   IDirectSoundBuffer_Play(sound.buffer, 0, 0, DSBPLAY_LOOPING);
 
   MSG msg = {0};
-  running = true;
+  running = TRUE;
 
   // TODO(casey): Pool with bitmap VirtualAlloc
   i16 *samples = (i16 *)VirtualAlloc(NULL, sound.bufferSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  if (samples == NULL) {
+    OutputDebugStringA("Error:VirtualAlloc-samples\n");
+    return 0;
+  }
 
   u64 previousCycleCount = __rdtsc();
   LARGE_INTEGER previousPerformanceCounter;
@@ -460,22 +464,40 @@ int WINAPI WinMain(_In_ HINSTANCE instance,
     maxControllerCount = ARRAY_LENGTH(previousGameInput.controllers);
   }
 
+  GameMemory gameMemory = {0};
+  gameMemory.permanent.size = MEGABYTES(64);
+  gameMemory.transient.size = GIGABYTES(4);
+  u64 gameMemoryTotalSize = gameMemory.permanent.size + gameMemory.transient.size;
+#if HANDMADE_INTERNAL
+  LPVOID gameMemoryBaseAddress = (LPVOID)TERABYTES(2);
+#else
+  LPVOID gameMemoryBaseAddress = NULL;
+#endif
+  LPVOID gameMemoryStorage =
+      VirtualAlloc(gameMemoryBaseAddress, gameMemoryTotalSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  if (gameMemoryStorage == NULL) {
+    OutputDebugStringA("Error:VirtualAlloc-GameMemory\n");
+    return 0;
+  }
+  gameMemory.permanent.storage = gameMemoryStorage;
+  gameMemory.transient.storage = (u8 *)gameMemoryStorage + gameMemoryTotalSize;
+
   while (running) {
     while (PeekMessageA(&msg, windowHandle, 0, 0, PM_REMOVE)) {
       if (msg.message == WM_QUIT) {
-        running = false;
+        running = FALSE;
       }
       TranslateMessage(&msg);
       DispatchMessageA(&msg);
     }
 
-    GameInput currentGameInput = {0};
+    GameInput gameInput = {0};
     // TODO(casey): Should we poll this more frequently?
     for (int controllerIndex = 0; controllerIndex < XUSER_MAX_COUNT; ++controllerIndex) {
       XINPUT_STATE controllerState = {0};
 
       GameControllerInput *previousController = &previousGameInput.controllers[controllerIndex];
-      GameControllerInput *currentController = &currentGameInput.controllers[controllerIndex];
+      GameControllerInput *currentController = &gameInput.controllers[controllerIndex];
 
       if (XInputGetState(controllerIndex, &controllerState) == ERROR_SUCCESS) {
         // Controller is connected
@@ -490,7 +512,7 @@ int WINAPI WinMain(_In_ HINSTANCE instance,
         f32 stickY = (f32)gamepad->sThumbLY;
         stickY /= (stickY < 0) ? 32768.0f : 32767.0f;
 
-        currentController->isAnalog = true;
+        currentController->isAnalog = TRUE;
         currentController->x.start = previousController->x.end;
         currentController->y.start = previousController->y.end;
         // TODO(casey): Min/Max macros!
@@ -554,7 +576,7 @@ int WINAPI WinMain(_In_ HINSTANCE instance,
         .samples = samples,
     };
 
-    GameUpdateAndRender(&gameScreen, &gameSound, &currentGameInput);
+    GameUpdateAndRender(&gameMemory, &gameScreen, &gameSound, &gameInput);
 
     if (validSound) {
       Win32FillSoundBuffer(&sound, lockOffset, lockBytes, &gameSound);
@@ -567,7 +589,7 @@ int WINAPI WinMain(_In_ HINSTANCE instance,
     Win32CopyBufferToWindow(deviceContext, windowDims.width, windowDims.height, &gameBackBuffer);
     ReleaseDC(windowHandle, deviceContext);
 
-    previousGameInput = currentGameInput;
+    previousGameInput = gameInput;
 
     u64 cycleCount = __rdtsc();
 
