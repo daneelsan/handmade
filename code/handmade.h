@@ -4,6 +4,7 @@
 #define global_variable static
 #define local_persist static
 
+// #define NULL (void *)0
 #define PI_32 3.14159265359f
 #define TRUE 1
 #define FALSE 0
@@ -47,6 +48,7 @@ typedef i32 b32;
 #endif
 
 #define ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
+// TODO(casey): swap, min, max ... macros?
 
 #define KYLOBYTE 1024LL
 #define KILOBYTES(n) ((n)*KYLOBYTE)
@@ -54,9 +56,32 @@ typedef i32 b32;
 #define GIGABYTES(n) (MEGABYTES(n) * KYLOBYTE)
 #define TERABYTES(n) (GIGABYTES(n) * KYLOBYTE)
 
+// TODO(casey): DEFINE's for maximum values
+inline u32 safeTruncate_u64_u32(u64 n) {
+  ASSERT(n <= 0xFFFFFFFF);
+  return (u32)n;
+}
+
 /*
   TODO(casey): Services that the plaform layer provides to the game
 */
+
+/* IMPORTANT(casey):
+    These are not for doing anything in the shippping game. They are
+    blocking and the write does not protect against lost data.
+*/
+
+// TODO(daniel): Add internal to these functions
+#if HANDMADE_INTERNAL
+struct DebugFile {
+  void *contents;
+  u32 size;
+};
+
+struct DebugFile DebugPlatformReadEntireFile(char *filename);
+b32 DebugPlatformWriteEntireFile(char *filename, void *memory, u32 memorySize);
+void DebugPlatformFreeFileMemory(void *memory);
+#endif
 
 /*
   NOTE(casey): Services that the game provides to the platform layer

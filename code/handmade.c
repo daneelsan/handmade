@@ -51,9 +51,15 @@ internal void GameUpdateAndRender(GameMemory *memory,
 
   GameState *gameState = (GameState *)memory->permanent.storage;
   if (!memory->isInitialized) {
+    char *filename = __FILE__;
+
+    struct DebugFile file = DebugPlatformReadEntireFile(filename);
+    if (file.size != 0) {
+      DebugPlatformWriteEntireFile("test.out", file.contents, file.size);
+      DebugPlatformFreeFileMemory(file.contents);
+    }
+
     gameState->toneHz = 256;
-    gameState->blueOffset = 0;
-    gameState->greenOffset = 0;
 
     // NOTE(casey): This may be more appropriate to do in the platform layer
     memory->isInitialized = TRUE;

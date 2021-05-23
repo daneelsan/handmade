@@ -38,7 +38,83 @@ global_variable Win32OffscreenBuffer gameBackBuffer = {.bytesPerPixel = 4};
 global_variable int stuffx;
 global_variable int stuffy;
 
-/* XInpput: Start */
+/* Debug: Start */
+
+struct DebugFile DebugPlatformReadEntireFile(char *filename) {
+  struct DebugFile file = {0};
+
+  HANDLE fileHandle = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+  if (fileHandle == INVALID_HANDLE_VALUE) {
+    OutputDebugStringA("Error:CreateFileA");
+    return file;
+  }
+
+  /*
+  LPDWORD fileSizeHi;
+  DWORD fileSizeLo = GetFileSize(fileHandle, &fileSizeHi);
+  if (fileSizeLo == INVALID_FILE_SIZE) {
+    OutputDebugStringA("Error:GetFileSize");
+    return NULL;
+  }
+  */
+
+  LARGE_INTEGER fileSize64;
+  if (!GetFileSizeEx(fileHandle, &fileSize64)) {
+    OutputDebugStringA("Error:GetFileSizeEx");
+    CloseHandle(fileHandle);
+    return file;
+  }
+  u32 fileSize = safeTruncate_u64_u32(fileSize64.QuadPart);
+
+  void *fileBuffer = VirtualAlloc(NULL, fileSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  if (fileBuffer == NULL) {
+    OutputDebugStringA("Error:VirtualAlloc");
+    CloseHandle(fileHandle);
+    return file;
+  }
+
+  DWORD bytesRead;
+  if (!(ReadFile(fileHandle, fileBuffer, fileSize, &bytesRead, NULL) && (fileSize == bytesRead))) {
+    DebugPlatformFreeFileMemory(fileBuffer);
+    OutputDebugStringA("Error:ReadFile");
+    CloseHandle(fileHandle);
+    return file;
+  }
+
+  file.contents = fileBuffer;
+  file.size = fileSize;
+
+  CloseHandle(fileHandle);
+  return file;
+}
+
+b32 DebugPlatformWriteEntireFile(char *filename, void *memory, u32 memorySize) {
+  HANDLE fileHandle = CreateFileA(filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+  if (fileHandle == INVALID_HANDLE_VALUE) {
+    OutputDebugStringA("Error:CreateFileA");
+    return FALSE;
+  }
+
+  DWORD bytesWritten;
+  if (!WriteFile(fileHandle, memory, memorySize, &bytesWritten, NULL)) {
+    DebugPlatformFreeFileMemory(memory);
+    OutputDebugStringA("Error:WriteFile");
+    return FALSE;
+  }
+
+  CloseHandle(fileHandle);
+  return memorySize == bytesWritten;
+}
+
+void DebugPlatformFreeFileMemory(void *memory) {
+  if (memory != NULL) {
+    VirtualFree(memory, 0, MEM_RELEASE);
+  }
+}
+
+/* Debug: End */
+
+/* XInput: Start */
 
 #define X_INPUT_GET_STATE(func) DWORD WINAPI func(DWORD dwUserIndex, XINPUT_STATE *pState)
 #define X_INPUT_SET_STATE(func) DWORD WINAPI func(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
@@ -92,7 +168,7 @@ internal void Win32ProcessXInputDigitalButton(WORD buttons,
   currentState->halfTransitionCount = (previousState->endedDown != currentState->endedDown) ? 1 : 0;
 }
 
-/* XInpput: End */
+/* XInput: End */
 
 /* DirectSound: Start */
 
